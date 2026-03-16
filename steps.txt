@@ -36,3 +36,4 @@ INSTALL DEPENDENCIES
 
 
 .venv/bin/python3 vocal.py
+.venv/bin/python3 vocal_painter.py
