@@ -28,9 +28,11 @@ CREATE requirements.txt
 ------------------------------------------------------------------------------
 INSTALL DEPENDENCIES
 ------------------------------------------------------------------------------
-pip install --upgrade pip
-pip install -r requirements.txt
+# NOTE: Homebrew aliases (python3 → Homebrew python3.12) override venv PATH.
+# Always use the explicit venv path — do NOT use bare 'python3' or 'python'.
+.venv/bin/python3 -m pip install --upgrade pip
+.venv/bin/python3 -m pip install -r requirements.txt
 
 
 
-python pop.py
+.venv/bin/python3 vocal.py
