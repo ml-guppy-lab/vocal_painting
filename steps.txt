@@ -13,6 +13,8 @@ git config user.email "sonalsh250@gmail.com"
 
 initialize repository: git remote add origin https://github.com/ml-guppy-lab/fire_writing.git
 
+git branch --set-upstream-to=origin/main main
+
 ------------------------------------------------------------------------------
 VIRTUAL ENVIRONMENT
 ------------------------------------------------------------------------------
