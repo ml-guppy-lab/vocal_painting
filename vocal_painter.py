@@ -10,8 +10,8 @@ Architecture
 Drawing model
 ─────────────
   • Painting layer  : numpy uint8 black canvas; strokes accumulate.
-  • X advances left→right at a fixed per-frame speed then wraps.
-  • Y driven by pitch  (high = top, low = bottom).
+  • Brush orbits a fixed center point; angle increases every audio chunk.
+  • Radius driven by pitch  (high = far from center, low = close).
   • Pen size follows amplitude  (loud = thick).
   • Pen color follows spectral centroid  (bright = warm, dull = cool).
 
@@ -65,8 +65,9 @@ def color_to_bgr(name: str) -> Tuple[int, int, int]:
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 DRAW_DURATION  = 30      # seconds; 0 = run until window is closed / Q pressed
-X_SPEED        = 8       # pixels advanced along X per brush frame
-X_MARGIN       = 20      # pixels kept clear at each horizontal edge
+ANGLE_SPEED    = 0.04    # radians advanced per brush frame (~1 full orbit / 8 s)
+MIN_RADIUS     = 40      # px — closest the brush gets to center
+MAX_RADIUS     = 360     # px — farthest the brush gets from center
 WINDOW_NAME    = "Vocal Painter  |  SPACE = clear  |  Q = quit"
 BG_BGR         = (0, 0, 0)      # pure black background fill
 ARTWORK_DIR    = os.path.join(os.path.dirname(os.path.abspath(__file__)), "artwork")
@@ -168,15 +169,14 @@ def run_painter(
     cv2.resizeWindow(WINDOW_NAME, w, h)
 
     # ── draw state ────────────────────────────────────────────────────────────
-    x_left       = X_MARGIN
-    x_right      = w - X_MARGIN
-    current_x    = x_left
+    cx, cy       = w // 2, h // 2   # orbit center
+    angle        = 0.0              # current angle in radians
     prev_pt: Optional[Tuple[int, int]] = None
 
     # ── console ───────────────────────────────────────────────────────────────
     dur_str = f"{duration} s" if duration > 0 else "until Q / window close"
     print("=" * 64)
-    print("  Vocal Painter — Phase 5: OpenCV Canvas")
+    print("  Vocal Painter — Phase 7: Orbital Brush")
     print("=" * 64)
     print(f"  Duration : {dur_str}")
     print(f"  Canvas   : {w} × {h} px")
@@ -198,7 +198,7 @@ def run_painter(
             if key == ord(" "):
                 painting = _blank_canvas(h, w)
                 prev_pt  = None
-                current_x = x_left
+                angle    = 0.0
                 print("  [SPACE] Canvas cleared.", flush=True)
 
             # ── check window still open ───────────────────────────────────────
@@ -212,30 +212,31 @@ def run_painter(
                 cv2.imshow(WINDOW_NAME, painting)
                 continue
 
-            # ── wrap X ────────────────────────────────────────────────────────
-            if current_x >= x_right:
-                current_x = x_left
-                prev_pt   = None   # lift pen at wrap
+            # ── pitch → radius (high pitch = far from center) ─────────────────
+            radius = int(np.interp(brush["y"], [0, h], [MAX_RADIUS, MIN_RADIUS]))
 
             # ── draw stroke ───────────────────────────────────────────────────
-            curr_pt = (current_x, brush["y"])
-            bgr     = color_to_bgr(brush["color"])
-            thick   = brush["thickness"]
+            curr_pt = (
+                cx + int(radius * np.cos(angle)),
+                cy + int(radius * np.sin(angle)),
+            )
+            bgr   = color_to_bgr(brush["color"])
+            thick = brush["thickness"]
 
             if prev_pt is not None:
                 cv2.line(painting, prev_pt, curr_pt, bgr, thick, cv2.LINE_AA)
             else:
                 cv2.circle(painting, curr_pt, max(1, thick // 2), bgr, -1, cv2.LINE_AA)
 
-            prev_pt    = curr_pt
-            current_x += X_SPEED
+            prev_pt = curr_pt
+            angle  += ANGLE_SPEED
 
             # ── display ───────────────────────────────────────────────────────
             cv2.imshow(WINDOW_NAME, painting)
 
             print(
-                f"  y={brush['y']:>4}  thick={thick:>2}  "
-                f"color={brush['color']:<8}  x={current_x:>5}",
+                f"  r={radius:>4}  thick={thick:>2}  "
+                f"color={brush['color']:<8}  angle={angle:>6.2f}",
                 flush=True,
             )
 
