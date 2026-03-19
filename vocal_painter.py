@@ -21,6 +21,7 @@ Controls
   Q / ESC / close button — quit
 """
 
+import os
 import queue
 import threading
 import time
@@ -68,6 +69,7 @@ X_SPEED        = 8       # pixels advanced along X per brush frame
 X_MARGIN       = 20      # pixels kept clear at each horizontal edge
 WINDOW_NAME    = "Vocal Painter  |  SPACE = clear  |  Q = quit"
 BG_BGR         = (0, 0, 0)      # pure black background fill
+ARTWORK_DIR    = os.path.join(os.path.dirname(os.path.abspath(__file__)), "artwork")
 
 
 # ── Audio worker ──────────────────────────────────────────────────────────────
@@ -113,6 +115,19 @@ def _audio_worker(
 def _blank_canvas(h: int = CANVAS_HEIGHT, w: int = CANVAS_WIDTH) -> np.ndarray:
     """Create a fresh black painting canvas."""
     return np.zeros((h, w, 3), dtype=np.uint8)
+
+
+def _save_painting(painting: np.ndarray) -> None:
+    """Save painting to ARTWORK_DIR with a sequential filename."""
+    os.makedirs(ARTWORK_DIR, exist_ok=True)
+    existing = [
+        f for f in os.listdir(ARTWORK_DIR)
+        if f.startswith("painting_") and f.endswith(".png")
+    ]
+    next_num = len(existing) + 1
+    filename = os.path.join(ARTWORK_DIR, f"painting_{next_num:03d}.png")
+    cv2.imwrite(filename, painting)
+    print(f"  Painting saved → {filename}")
 
 
 # ── Main painter ──────────────────────────────────────────────────────────────
@@ -232,7 +247,10 @@ def run_painter(
         stop_event.set()
         audio_thread.join(timeout=2.0)
 
-        # 2. Destroy window + flush macOS event queue (required on macOS —
+        # 2. Save the painting
+        _save_painting(painting)
+
+        # 3. Destroy window + flush macOS event queue (required on macOS —
         #    destroyAllWindows alone doesn't process the close event)
         cv2.destroyAllWindows()
         for _ in range(5):
