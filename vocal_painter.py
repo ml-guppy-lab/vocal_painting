@@ -11,7 +11,7 @@ Drawing model
 ─────────────
   • Painting layer  : numpy uint8 black canvas; strokes accumulate.
   • Brush orbits a fixed center point; angle increases every audio chunk.
-  • Radius driven by pitch  (high = far from center, low = close).
+  • Radius = base + pitch variation  (high note = bloom out, low = shrink in).
   • Pen size follows amplitude  (loud = thick).
   • Pen color follows spectral centroid  (bright = warm, dull = cool).
 
@@ -66,8 +66,8 @@ def color_to_bgr(name: str) -> Tuple[int, int, int]:
 # ── Constants ─────────────────────────────────────────────────────────────────
 DRAW_DURATION  = 30      # seconds; 0 = run until window is closed / Q pressed
 ANGLE_SPEED    = 0.04    # radians advanced per brush frame (~1 full orbit / 8 s)
-MIN_RADIUS     = 40      # px — closest the brush gets to center
-MAX_RADIUS     = 360     # px — farthest the brush gets from center
+BASE_RADIUS    = 150     # px — resting orbit radius
+RADIUS_RANGE   = 130     # px — max bloom out / shrink in from base
 WINDOW_NAME    = "Vocal Painter  |  SPACE = clear  |  Q = quit"
 BG_BGR         = (0, 0, 0)      # pure black background fill
 ARTWORK_DIR    = os.path.join(os.path.dirname(os.path.abspath(__file__)), "artwork")
@@ -212,8 +212,8 @@ def run_painter(
                 cv2.imshow(WINDOW_NAME, painting)
                 continue
 
-            # ── pitch → radius (high pitch = far from center) ─────────────────
-            radius = int(np.interp(brush["y"], [0, h], [MAX_RADIUS, MIN_RADIUS]))
+            # ── pitch → radius: base ± variation (high note = bloom out) ──────
+            radius = BASE_RADIUS + int(np.interp(brush["y"], [0, h], [RADIUS_RANGE, -RADIUS_RANGE]))
 
             # ── draw stroke ───────────────────────────────────────────────────
             curr_pt = (
