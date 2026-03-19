@@ -1,7 +1,7 @@
 """
-vocal_painter.py — Phase 5: OpenCV Canvas + Webcam Overlay
-------------------------------------------------------------
-Replaces the turtle canvas with a full OpenCV window.
+vocal_painter.py — OpenCV Canvas
+---------------------------------
+Paints in real time from microphone input on a black OpenCV canvas.
 
 Architecture
 ────────────
@@ -9,9 +9,7 @@ Architecture
 
 Drawing model
 ─────────────
-  • Painting layer  : numpy uint8 canvas; strokes accumulate.
-  • Webcam layer    : optional live camera feed blended behind the painting.
-  • Display frame   : webcam_alpha * webcam + canvas_alpha * painting.
+  • Painting layer  : numpy uint8 black canvas; strokes accumulate.
   • X advances left→right at a fixed per-frame speed then wraps.
   • Y driven by pitch  (high = top, low = bottom).
   • Pen size follows amplitude  (loud = thick).
@@ -19,7 +17,7 @@ Drawing model
 
 Controls
 ────────
-  SPACE  — clear the painting layer (keep webcam running)
+  SPACE  — clear the canvas
   Q / ESC / close button — quit
 """
 
@@ -27,6 +25,7 @@ import queue
 import threading
 import time
 from typing import Optional, Tuple
+
 
 import cv2
 import numpy as np
@@ -68,9 +67,7 @@ DRAW_DURATION  = 30      # seconds; 0 = run until window is closed / Q pressed
 X_SPEED        = 8       # pixels advanced along X per brush frame
 X_MARGIN       = 20      # pixels kept clear at each horizontal edge
 WINDOW_NAME    = "Vocal Painter  |  SPACE = clear  |  Q = quit"
-WEBCAM_ALPHA   = 0.30    # how strongly the webcam shows through
-CANVAS_ALPHA   = 0.85    # opacity of the painting layer
-BG_BGR         = (20, 20, 20)   # near-black background fill
+BG_BGR         = (0, 0, 0)      # pure black background fill
 
 
 # ── Audio worker ──────────────────────────────────────────────────────────────
@@ -114,27 +111,8 @@ def _audio_worker(
 # ── Canvas helpers ────────────────────────────────────────────────────────────
 
 def _blank_canvas(h: int = CANVAS_HEIGHT, w: int = CANVAS_WIDTH) -> np.ndarray:
-    """Create a fresh dark background painting layer."""
-    canvas = np.zeros((h, w, 3), dtype=np.uint8)
-    canvas[:] = BG_BGR
-    return canvas
-
-
-def _composite(
-    painting: np.ndarray,
-    webcam_frame: Optional[np.ndarray],
-    h: int,
-    w: int,
-) -> np.ndarray:
-    """
-    Blend webcam (behind) + painting (on top).
-    If no webcam, just return the painting layer directly.
-    """
-    if webcam_frame is None:
-        return painting.copy()
-
-    cam = cv2.resize(webcam_frame, (w, h))
-    return cv2.addWeighted(cam, WEBCAM_ALPHA, painting, CANVAS_ALPHA, 0)
+    """Create a fresh black painting canvas."""
+    return np.zeros((h, w, 3), dtype=np.uint8)
 
 
 # ── Main painter ──────────────────────────────────────────────────────────────
@@ -144,7 +122,6 @@ def run_painter(
     sr: int = SAMPLE_RATE,
     frame_samples: int = FRAME_SAMPLES,
     smooth_window: int = SMOOTH_WINDOW,
-    use_webcam: bool = True,
 ) -> None:
     """
     Open the OpenCV window and paint in real time from mic input.
@@ -155,20 +132,8 @@ def run_painter(
     sr            : audio sample rate in Hz
     frame_samples : samples per analysis frame
     smooth_window : moving-average window for brush smoothing
-    use_webcam    : attempt to open default webcam as background
     """
     h, w = CANVAS_HEIGHT, CANVAS_WIDTH
-
-    # ── webcam (optional) ─────────────────────────────────────────────────────
-    cam = None
-    if use_webcam:
-        cap = cv2.VideoCapture(0)
-        if cap.isOpened():
-            cam = cap
-            print("[webcam] Camera opened successfully.")
-        else:
-            cap.release()
-            print("[webcam] No camera found — painting on solid background.")
 
     # ── painting layer ────────────────────────────────────────────────────────
     painting = _blank_canvas(h, w)
@@ -225,19 +190,11 @@ def run_painter(
             if cv2.getWindowProperty(WINDOW_NAME, cv2.WND_PROP_VISIBLE) < 1:
                 break
 
-            # ── grab webcam frame ─────────────────────────────────────────────
-            webcam_frame = None
-            if cam is not None:
-                ret, frame = cam.read()
-                if ret:
-                    webcam_frame = cv2.flip(frame, 1)   # mirror view
-
             # ── drain brush queue ─────────────────────────────────────────────
             try:
                 brush = brush_q.get_nowait()
             except queue.Empty:
-                display = _composite(painting, webcam_frame, h, w)
-                cv2.imshow(WINDOW_NAME, display)
+                cv2.imshow(WINDOW_NAME, painting)
                 continue
 
             # ── wrap X ────────────────────────────────────────────────────────
@@ -259,8 +216,7 @@ def run_painter(
             current_x += X_SPEED
 
             # ── display ───────────────────────────────────────────────────────
-            display = _composite(painting, webcam_frame, h, w)
-            cv2.imshow(WINDOW_NAME, display)
+            cv2.imshow(WINDOW_NAME, painting)
 
             print(
                 f"  y={brush['y']:>4}  thick={thick:>2}  "
@@ -272,16 +228,11 @@ def run_painter(
         pass
 
     finally:
-        # 1. Signal audio thread to stop and wait for it to exit cleanly
-        #    (gives sounddevice time to close the stream before we release cam)
+        # 1. Signal audio thread to stop
         stop_event.set()
         audio_thread.join(timeout=2.0)
 
-        # 2. Release camera
-        if cam is not None:
-            cam.release()
-
-        # 3. Destroy window + flush macOS event queue (required on macOS —
+        # 2. Destroy window + flush macOS event queue (required on macOS —
         #    destroyAllWindows alone doesn't process the close event)
         cv2.destroyAllWindows()
         for _ in range(5):
