@@ -10,8 +10,9 @@ Architecture
 Drawing model
 ─────────────
   • Painting layer  : numpy uint8 black canvas; strokes accumulate.
-  • Brush orbits a fixed center point; angle increases every audio chunk.
-  • Radius = base + pitch variation  (high note = bloom out, low = shrink in).
+  • Radius = base + pitch_var + amplitude_wobble + bloom_boost.
+  • Wobble: sin(angle × PETAL_N) scaled by amplitude → petal-edge bumps.
+  • Bloom burst: hold a loud note for 1 s → radius surges for 2.5 s.
   • Pen size follows amplitude  (loud = thick).
   • Pen color follows spectral centroid  (bright = warm, dull = cool).
 
@@ -64,10 +65,15 @@ def color_to_bgr(name: str) -> Tuple[int, int, int]:
 
 
 # ── Constants ─────────────────────────────────────────────────────────────────
-DRAW_DURATION  = 30      # seconds; 0 = run until window is closed / Q pressed
-ANGLE_SPEED    = 0.04    # radians advanced per brush frame (~1 full orbit / 8 s)
-BASE_RADIUS    = 150     # px — resting orbit radius
-RADIUS_RANGE   = 130     # px — max bloom out / shrink in from base
+ANGLE_SPEED         = 0.04   # radians advanced per brush frame (~1 full orbit / 8 s)
+BASE_RADIUS         = 150    # px — resting orbit radius
+RADIUS_RANGE        = 130    # px — max bloom out / shrink in from base (pitch)
+WOBBLE_AMP          = 50     # px — max petal-edge wobble at full amplitude
+PETAL_N             = 6      # sine frequency multiplier — N bumps per orbit
+BLOOM_THICK_THRESH  = 25     # brush thickness (out of 40) that arms the bloom
+BLOOM_HOLD_SECS     = 1.0    # seconds of sustained loud voice to fire a bloom burst
+BLOOM_DURATION      = 2.5    # seconds the bloom surge lasts
+BLOOM_EXTRA         = 90     # px added at peak bloom, decays linearly to 0
 WINDOW_NAME    = "Vocal Painter  |  SPACE = clear  |  Q = quit"
 BG_BGR         = (0, 0, 0)      # pure black background fill
 ARTWORK_DIR    = os.path.join(os.path.dirname(os.path.abspath(__file__)), "artwork")
@@ -134,7 +140,6 @@ def _save_painting(painting: np.ndarray) -> None:
 # ── Main painter ──────────────────────────────────────────────────────────────
 
 def run_painter(
-    duration: float = DRAW_DURATION,
     sr: int = SAMPLE_RATE,
     frame_samples: int = FRAME_SAMPLES,
     smooth_window: int = SMOOTH_WINDOW,
@@ -144,7 +149,6 @@ def run_painter(
 
     Parameters
     ----------
-    duration      : seconds to paint (0 = until Q / window closed)
     sr            : audio sample rate in Hz
     frame_samples : samples per analysis frame
     smooth_window : moving-average window for brush smoothing
@@ -169,36 +173,29 @@ def run_painter(
     cv2.resizeWindow(WINDOW_NAME, w, h)
 
     # ── draw state ────────────────────────────────────────────────────────────
-    cx, cy       = w // 2, h // 2   # orbit center
-    angle        = 0.0              # current angle in radians
+    cx, cy          = w // 2, h // 2   # orbit center
+    angle           = 0.0              # current angle in radians
+    amp_loud_since  = None             # timestamp when loud threshold was crossed
+    bloom_end_time  = 0.0              # timestamp when bloom burst expires
     prev_pt: Optional[Tuple[int, int]] = None
 
     # ── console ───────────────────────────────────────────────────────────────
-    dur_str = f"{duration} s" if duration > 0 else "until Q / window close"
-    print("=" * 64)
-    print("  Vocal Painter — Phase 7: Orbital Brush")
-    print("=" * 64)
-    print(f"  Duration : {dur_str}")
     print(f"  Canvas   : {w} × {h} px")
     print("  SPACE = clear canvas  |  Q / ESC = quit")
     print("  Sing or hum — watch the painting grow!\n")
 
-    start_time = time.time()
-
     try:
         while True:
-            # ── quit conditions ───────────────────────────────────────────────
-            if duration > 0 and (time.time() - start_time) >= duration:
-                break
-
             # ── keyboard ─────────────────────────────────────────────────────
             key = cv2.waitKey(1) & 0xFF
             if key in (ord("q"), ord("Q"), 27):   # Q or ESC
                 break
             if key == ord(" "):
-                painting = _blank_canvas(h, w)
-                prev_pt  = None
-                angle    = 0.0
+                painting        = _blank_canvas(h, w)
+                prev_pt         = None
+                angle           = 0.0
+                amp_loud_since  = None
+                bloom_end_time  = 0.0
                 print("  [SPACE] Canvas cleared.", flush=True)
 
             # ── check window still open ───────────────────────────────────────
@@ -212,16 +209,41 @@ def run_painter(
                 cv2.imshow(WINDOW_NAME, painting)
                 continue
 
-            # ── pitch → radius: base ± variation (high note = bloom out) ──────
-            radius = BASE_RADIUS + int(np.interp(brush["y"], [0, h], [RADIUS_RANGE, -RADIUS_RANGE]))
+            # ── radius = base + pitch + wobble + bloom ─────────────────────────
+            now   = time.time()
+            bgr   = color_to_bgr(brush["color"])
+            thick = brush["thickness"]
+
+            pitch_var = int(np.interp(brush["y"], [0, h], [RADIUS_RANGE, -RADIUS_RANGE]))
+
+            # petal wobble: N bumps per orbit, depth scaled by amplitude
+            amp_t  = np.clip(thick / 40.0, 0.0, 1.0)
+            wobble = int(amp_t * WOBBLE_AMP * np.sin(angle * PETAL_N))
+
+            # bloom burst: arm when loud, fire after BLOOM_HOLD_SECS
+            if thick >= BLOOM_THICK_THRESH:
+                if amp_loud_since is None:
+                    amp_loud_since = now
+                elif (now - amp_loud_since >= BLOOM_HOLD_SECS
+                        and now >= bloom_end_time):
+                    bloom_end_time = now + BLOOM_DURATION
+                    amp_loud_since = None   # re-arm for next burst
+                    print("  [BLOOM] Burst triggered!", flush=True)
+            else:
+                amp_loud_since = None
+
+            bloom_boost = 0
+            if now < bloom_end_time:
+                t           = (bloom_end_time - now) / BLOOM_DURATION  # 1 → 0
+                bloom_boost = int(BLOOM_EXTRA * t)
+
+            radius = max(5, BASE_RADIUS + pitch_var + wobble + bloom_boost)
 
             # ── draw stroke ───────────────────────────────────────────────────
             curr_pt = (
                 cx + int(radius * np.cos(angle)),
                 cy + int(radius * np.sin(angle)),
             )
-            bgr   = color_to_bgr(brush["color"])
-            thick = brush["thickness"]
 
             if prev_pt is not None:
                 cv2.line(painting, prev_pt, curr_pt, bgr, thick, cv2.LINE_AA)
@@ -236,7 +258,8 @@ def run_painter(
 
             print(
                 f"  r={radius:>4}  thick={thick:>2}  "
-                f"color={brush['color']:<8}  angle={angle:>6.2f}",
+                f"color={brush['color']:<8}  angle={angle:>6.2f}"
+                + ("  🌸 BLOOM" if now < bloom_end_time else ""),
                 flush=True,
             )
 
